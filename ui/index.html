@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ring of the Middle Earth - Game UI</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <h1>💍 Ring of the Middle Earth</h1>
+      <p>Kafka + Go Strategy Game UI</p>
+    </div>
+
+    <div class="side-selector">
+      <label for="sideSelect">Side</label>
+      <select id="sideSelect">
+        <option value="light">Light Side</option>
+        <option value="shadow">Dark Side</option>
+      </select>
+      <button id="connectEventsBtn">Connect SSE</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="card controls">
+      <h2>Game Controls</h2>
+
+      <div class="button-row">
+        <button id="healthBtn">Health</button>
+        <button id="startBtn">Start Game</button>
+        <button id="stateBtn">Refresh State</button>
+        <button id="turnBtn">End Turn</button>
+      </div>
+
+      <div class="button-row">
+        <button id="routesBtn">Analyze Routes</button>
+        <button id="interceptBtn">Analyze Intercept</button>
+        <button id="ordersBtn">Available Orders</button>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2>Send Order</h2>
+
+        <label for="orderTemplate">Quick Order</label>
+        <select id="orderTemplate">
+          <option value="ringMove">Ring Bearer: Shire → Bree</option>
+          <option value="aragornMove">Aragorn: Bree → Weathertop</option>
+          <option value="invalidWrongTurn">Invalid: Wrong Turn</option>
+          <option value="invalidNotYourUnit">Invalid: Not Your Unit</option>
+        </select>
+
+        <button id="loadTemplateBtn">Load Template</button>
+
+        <label for="orderInput">Order JSON</label>
+        <textarea id="orderInput" rows="11"></textarea>
+
+        <button id="sendOrderBtn" class="primary">Send Order</button>
+      </div>
+
+      <div class="card">
+        <h2>Current State Summary</h2>
+        <div id="stateSummary" class="summary-box">
+          Henüz state yüklenmedi.
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2>API Output</h2>
+        <pre id="apiOutput"></pre>
+      </div>
+
+      <div class="card">
+        <h2>SSE Event Log</h2>
+        <pre id="eventLog"></pre>
+      </div>
+    </section>
+  </main>
+
+  <script src="game.js"></script>
+</body>
+</html>

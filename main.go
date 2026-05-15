@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -106,6 +107,36 @@ func main() {
 		}
 	})
 
+		// Generic SSE endpoint'i: /events?side=light veya /events?side=shadow
+	http.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+		side := r.URL.Query().Get("side")
+		if side == "" {
+			side = "light"
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		var selectedCh <-chan internal.Event
+
+		if side == "shadow" || side == "dark" {
+			fmt.Println("🌑 Karanlık Taraf /events üzerinden canlı yayına bağlandı!")
+			selectedCh = darkSideSSECh
+		} else {
+			fmt.Println("🌐 Işık Tarafı /events üzerinden canlı yayına bağlandı!")
+			selectedCh = lightSideSSECh
+		}
+
+		for msg := range selectedCh {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", msg.Topic, string(msg.Payload))
+
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	})
+
 	// Oyun state endpoint'i
 	http.HandleFunc("/game/state", func(w http.ResponseWriter, r *http.Request) {
 		side := r.URL.Query().Get("side")
@@ -116,6 +147,77 @@ func main() {
 		payload, err := internal.GetPublicWorldStateJSON(side)
 		if err != nil {
 			http.Error(w, "State oluşturulamadı", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(payload)
+	})
+		// Health check endpoint'i
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Sadece GET desteklenir", http.StatusMethodNotAllowed)
+			return
+		}
+
+		payload, err := internal.ToJSON(internal.GetHealthResponse())
+		if err != nil {
+			http.Error(w, "Health response oluşturulamadı", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(payload)
+	})
+		// Game start endpoint'i
+	http.HandleFunc("/game/start", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Sadece POST desteklenir", http.StatusMethodNotAllowed)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Body okunamadı", http.StatusBadRequest)
+			return
+		}
+
+		req := internal.GameStartRequest{Mode: "HVH"}
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				http.Error(w, "Geçersiz JSON", http.StatusBadRequest)
+				return
+			}
+		}
+
+		resp := internal.StartGameFromRequest(req)
+
+		payload, err := internal.ToJSON(resp)
+		if err != nil {
+			http.Error(w, "Game start response oluşturulamadı", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(payload)
+	})
+	// Available orders endpoint'i
+	http.HandleFunc("/orders/available", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Sadece GET desteklenir", http.StatusMethodNotAllowed)
+			return
+		}
+
+		playerID := r.URL.Query().Get("playerId")
+		unitID := r.URL.Query().Get("unitId")
+
+		resp := internal.GetOrdersAvailable(playerID, unitID)
+
+		payload, err := internal.ToJSON(resp)
+		if err != nil {
+			http.Error(w, "Available orders response oluşturulamadı", http.StatusInternalServerError)
 			return
 		}
 
@@ -203,7 +305,9 @@ func main() {
 		w.WriteHeader(http.StatusAccepted)
 		fmt.Fprintln(w, "⚔️ Emir Kafka'ya iletildi!")
 	})
-
+	// Static UI
+	fs := http.FileServer(http.Dir("./ui"))
+	http.Handle("/", fs)
 	fmt.Println("🚀 Tüm sistemler devrede! Sunucu 8080 portunda dinliyor...")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatalf("❌ Sunucu çöktü: %v", err)
