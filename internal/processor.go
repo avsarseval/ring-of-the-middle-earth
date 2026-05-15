@@ -124,6 +124,7 @@ func ProcessTurn(unitID string, sourceNode string, targetNode string) error {
 			NodeOccupants[sourceNode] = ""
 
 			UpdateUnitRegion(unitID, targetNode)
+			RevertPathBlocksForMovingUnit(unitID, targetNode)
 
 			fmt.Println("🎯 İşlem tamamlandı!")
 			return nil
@@ -146,6 +147,7 @@ func ProcessTurn(unitID string, sourceNode string, targetNode string) error {
 			NodeOccupants[sourceNode] = ""
 
 			UpdateUnitRegion(unitID, targetNode)
+			RevertPathBlocksForMovingUnit(unitID, targetNode)
 
 			if occupant == RingBearerID {
 				fmt.Println("💀 GÖREV BAŞARISIZ: Yüzük Taşıyıcısı yok edildi. KARANLIK TARAF KAZANDI! 🌑")
@@ -170,6 +172,7 @@ func ProcessTurn(unitID string, sourceNode string, targetNode string) error {
 		NodeOccupants[sourceNode] = ""
 
 		UpdateUnitRegion(unitID, targetNode)
+		RevertPathBlocksForMovingUnit(unitID, targetNode)
 	}
 
 	if unitID == RingBearerID && targetNode == MountDoomID {

@@ -618,7 +618,6 @@ func writeDLQ(producer *kafka.Producer, event Event, errorCode string, errorMess
 	fmt.Printf("🧯 Geçersiz emir game.dlq topic'ine yazıldı | errorCode=%s\n", errorCode)
 }
 
-// processValidatedOrder doğrulanmış emri oyun motoruna uygular.
 func processValidatedOrder(event Event, lightSideSSECh chan<- Event, darkSideSSECh chan<- Event) {
 	var order OrderPayload
 	if err := json.Unmarshal(event.Payload, &order); err != nil {
@@ -627,6 +626,45 @@ func processValidatedOrder(event Event, lightSideSSECh chan<- Event, darkSideSSE
 	}
 
 	fmt.Println("📩 Kafka'dan validated emir yakalandı!")
+
+	var (
+		msg string
+		err error
+	)
+
+	switch order.OrderType {
+	case OrderBlockPath:
+		msg, err = ApplyBlockPathOrder(order)
+
+	case OrderSearchPath:
+		msg, err = ApplySearchPathOrder(order)
+
+	case OrderFortifyRegion:
+		msg, err = ApplyFortifyRegionOrder(order)
+
+	case OrderMaiaAbility:
+		msg, err = ApplyMaiaAbilityOrder(order)
+
+	case OrderAttackRegion:
+		msg, err = ApplyAttackRegionOrder(order)
+	}
+
+	if order.OrderType == OrderBlockPath ||
+		order.OrderType == OrderSearchPath ||
+		order.OrderType == OrderFortifyRegion ||
+		order.OrderType == OrderMaiaAbility ||
+		order.OrderType == OrderAttackRegion {
+
+		if err != nil {
+			fmt.Println("❌ Action order işlenemedi:", err)
+			return
+		}
+
+		broadcastEvent := broadcastActionMessage(TopicBroadcast, msg)
+		lightSideSSECh <- broadcastEvent
+		darkSideSSECh <- stripRingBearer(broadcastEvent)
+		return
+	}
 
 	unitID := normalizedUnitID(order)
 
@@ -640,12 +678,10 @@ func processValidatedOrder(event Event, lightSideSSECh chan<- Event, darkSideSSE
 		}
 
 		if len(pathIDs) == 0 {
-			// ATTACK_REGION gibi route dışı order'ları şimdilik engine'e uygulamıyoruz.
 			fmt.Printf("ℹ️ %s order validated edildi fakat ProcessTurn route move olmadığı için uygulanmadı.\n", order.OrderType)
 			return
 		}
 
-		var err error
 		source, target, err = ResolveMoveFromPath(unitID, pathIDs[0])
 		if err != nil {
 			fmt.Println("❌ Route çözümlenemedi:", err)
@@ -658,11 +694,8 @@ func processValidatedOrder(event Event, lightSideSSECh chan<- Event, darkSideSSE
 		return
 	}
 
-	successMsg := fmt.Sprintf(`{"message":"%s, %s bölgesine başarıyla ulaştı!"}`, unitID, target)
-	broadcastEvent := Event{
-		Topic:   TopicBroadcast,
-		Payload: []byte(successMsg),
-	}
+	successMsg := fmt.Sprintf(`%s, %s bölgesine başarıyla ulaştı!`, unitID, target)
+	broadcastEvent := broadcastActionMessage(TopicBroadcast, successMsg)
 
 	lightSideSSECh <- broadcastEvent
 	darkSideSSECh <- stripRingBearer(broadcastEvent)
