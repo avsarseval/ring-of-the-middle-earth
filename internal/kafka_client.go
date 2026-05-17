@@ -2,6 +2,8 @@ package internal
 
 import (
 	"fmt"
+	"context"
+	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
@@ -13,6 +15,27 @@ func InitProducer(broker string) (*kafka.Producer, error) {
 		return nil, fmt.Errorf("producer oluşturulamadı: %w", err)
 	}
 	return p, nil
+}
+func InitTransactionalProducer(broker string, transactionalID string) (*kafka.Producer, error) {
+	producer, err := kafka.NewProducer(&kafka.ConfigMap{
+		"bootstrap.servers": broker,
+		"transactional.id":  transactionalID,
+		"acks":              "all",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := producer.InitTransactions(ctx); err != nil {
+		producer.Close()
+		return nil, err
+	}
+
+	fmt.Printf("✅ Transactional Kafka Producer hazırlandı | transactional.id=%s\n", transactionalID)
+	return producer, nil
 }
 
 // ProduceMessage verilen topic'e Kafka mesajı yazar.

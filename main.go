@@ -38,6 +38,15 @@ func main() {
 	}
 	defer producer.Close()
 
+	transactionalProducer, err := internal.InitTransactionalProducer(
+	kafkaBroker,
+	"game-over-transactional-producer-1",
+	)
+	if err != nil {
+		log.Fatalf("❌ Transactional producer başlatılamadı: %v", err)
+	}
+	defer transactionalProducer.Close()
+
 	eventCh := make(chan internal.Event, 100)
 	lightSideSSECh := make(chan internal.Event, 100)
 	darkSideSSECh := make(chan internal.Event, 100)
@@ -282,6 +291,55 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"message":"Turn advanced","turn":%d}`, newTurn)
+	})
+
+	// K6 Demo: transactional GameOver publish
+	http.HandleFunc("/demo/game-over-transaction", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Sadece POST desteklenir", http.StatusMethodNotAllowed)
+			return
+		}
+
+		gameID := r.URL.Query().Get("gameId")
+		if gameID == "" {
+			gameID = "demo-game-1"
+		}
+
+		if err := internal.PublishGameOverAndAbortForDemo(
+			transactionalProducer,
+			gameID,
+			"SHADOW",
+			"ABORTED_ENGINE_CRASH",
+		); err != nil {
+			http.Error(w, fmt.Sprintf("Abort demo failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		if err := internal.PublishGameOverTransactionally(
+			transactionalProducer,
+			gameID,
+			"SHADOW",
+			"ENGINE_CRASH_COMMITTED",
+		); err != nil {
+			http.Error(w, fmt.Sprintf("Commit demo failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		resp := map[string]interface{}{
+			"message": "Transactional GameOver demo executed",
+			"gameId": gameID,
+			"abortedTransaction": "ABORTED_ENGINE_CRASH should not be visible to read_committed consumers",
+			"committedTransaction": "ENGINE_CRASH_COMMITTED should be visible exactly once",
+		}
+
+		payload, err := internal.ToJSON(resp)
+		if err != nil {
+			http.Error(w, "Response oluşturulamadı", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(payload)
 	})
 
 	// Oyuncu emri alma endpoint'i
