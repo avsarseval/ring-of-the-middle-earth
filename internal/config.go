@@ -22,6 +22,7 @@ type UnitConfig struct {
 	RespawnTurns     int      `json:"respawnTurns"`
 	Maia             bool     `json:"maia"`
 	MaiaAbilityPaths []string `json:"maiaAbilityPaths"`
+	AbilityEffect string `json:"abilityEffect"`
 	IgnoresFortress  bool     `json:"ignoresFortress"`
 	CanFortify       bool     `json:"canFortify"`
 	Cooldown         int      `json:"cooldown"`

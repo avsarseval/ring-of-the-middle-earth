@@ -140,28 +140,27 @@ func ApplyMaiaAbilityOrder(order OrderPayload) (string, error) {
 		return "", fmt.Errorf("%s ability cooldown'da", unitID)
 	}
 
-	switch unitID {
-	case "gandalf":
+	switch unit.AbilityEffect {
+	case "TEMPORARILY_OPEN_PATH":
 		if pathID == "" {
-			return "", errors.New("Gandalf ability için pathId boş")
+			return "", errors.New("TEMPORARILY_OPEN_PATH ability için pathId boş")
 		}
 
 		if !pathExists(pathID) {
 			return "", fmt.Errorf("path bulunamadı: %s", pathID)
 		}
 
-		// Gandalf: blocked/threatened path'i geçici açar.
 		setPathStatus(pathID, "TEMPORARILY_OPEN")
 		UpdatePathStatus(pathID, "TEMPORARILY_OPEN")
 		setCooldown(unitID, 2)
 
-		msg := fmt.Sprintf("Gandalf, %s yolunu TEMPORARILY_OPEN yaptı", pathID)
+		msg := fmt.Sprintf("%s, %s yolunu TEMPORARILY_OPEN yaptı", unitID, pathID)
 		fmt.Println("🧙", msg)
 		return msg, nil
 
-	case "saruman":
+	case "CORRUPT_PATH":
 		if pathID == "" {
-			return "", errors.New("Saruman ability için pathId boş")
+			return "", errors.New("CORRUPT_PATH ability için pathId boş")
 		}
 
 		worldStateMu.Lock()
@@ -171,7 +170,6 @@ func ApplyMaiaAbilityOrder(order OrderPayload) (string, error) {
 			return "", fmt.Errorf("path bulunamadı: %s", pathID)
 		}
 
-		// Saruman: surveillance yükseltir.
 		path.SurveillanceLevel = 3
 		path.Status = "THREATENED"
 		WorldState.Paths[pathID] = path
@@ -180,20 +178,19 @@ func ApplyMaiaAbilityOrder(order OrderPayload) (string, error) {
 		setPathStatus(pathID, "THREATENED")
 		setCooldown(unitID, 2)
 
-		msg := fmt.Sprintf("Saruman, %s yolunun surveillanceLevel değerini 3 yaptı", pathID)
+		msg := fmt.Sprintf("%s, %s yolunun surveillanceLevel değerini 3 yaptı", unitID, pathID)
 		fmt.Println("🧙‍♂️", msg)
 		return msg, nil
 
-	case "sauron":
-		// Sauron passive detection amplifier zaten detection.go içinde çalışıyor.
+	case "SAURON_AMPLIFIER":
 		setCooldown(unitID, 2)
 
-		msg := "Sauron passive amplifier aktif; Nazgul detection range +1"
+		msg := fmt.Sprintf("%s passive amplifier aktif; Nazgul detection range +1", unitID)
 		fmt.Println("👁️", msg)
 		return msg, nil
 
 	default:
-		return "", fmt.Errorf("Maia ability tanımlı değil: %s", unitID)
+		return "", fmt.Errorf("Maia abilityEffect tanımlı değil: unit=%s effect=%s", unitID, unit.AbilityEffect)
 	}
 }
 
