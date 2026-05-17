@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 
 	"ring-of-the-middle-earth/internal"
 )
@@ -14,7 +15,17 @@ func main() {
 	fmt.Println("🌟 Yüzüklerin Efendisi: Oyun Motoru Başlatılıyor... 🌟")
 
 	// JSON Konfigürasyonlarını Yükle
-	if err := internal.LoadAllConfigs("../config/map.conf", "../config/units.conf"); err != nil {
+	mapConfigPath := os.Getenv("MAP_CONFIG_PATH")
+	if mapConfigPath == "" {
+		mapConfigPath = "../config/map.conf"
+	}
+
+	unitsConfigPath := os.Getenv("UNITS_CONFIG_PATH")
+	if unitsConfigPath == "" {
+		unitsConfigPath = "../config/units.conf"
+	}
+
+	if err := internal.LoadAllConfigs(mapConfigPath, unitsConfigPath); err != nil {
 		log.Fatalf("❌ Ayarlar yüklenemedi: %v", err)
 	}
 
@@ -29,8 +40,11 @@ func main() {
 		}
 	}
 
-	kafkaBroker := "localhost:9092"
-
+	kafkaBroker := os.Getenv("KAFKA_BROKER")
+	if kafkaBroker == "" {
+		kafkaBroker = "localhost:9092"
+	}
+	
 	// Kafka Producer başlat
 	producer, err := internal.InitProducer(kafkaBroker)
 	if err != nil {
@@ -38,9 +52,16 @@ func main() {
 	}
 	defer producer.Close()
 
+	instanceID := os.Getenv("HOSTNAME")
+	if instanceID == "" {
+		instanceID = "local"
+	}
+
+	transactionalID := fmt.Sprintf("game-over-transactional-producer-%s", instanceID)
+
 	transactionalProducer, err := internal.InitTransactionalProducer(
-	kafkaBroker,
-	"game-over-transactional-producer-1",
+		kafkaBroker,
+		transactionalID,
 	)
 	if err != nil {
 		log.Fatalf("❌ Transactional producer başlatılamadı: %v", err)
@@ -65,9 +86,13 @@ func main() {
 	)
 
 	// Kafka'dan raw, validated ve dlq topiclerini dinle
+	consumerGroup := os.Getenv("KAFKA_CONSUMER_GROUP")
+	if consumerGroup == "" {
+		consumerGroup = "game-engine-group-final"
+	}
 	go internal.StartKafkaConsumer(
 	kafkaBroker,
-	"game-engine-group-v7",
+	consumerGroup,
 	[]string{
 		internal.TopicOrdersRaw,
 		internal.TopicOrdersValidated,
@@ -81,6 +106,7 @@ func main() {
 	},
 	eventCh,
 )
+
 
 	// Işık tarafı SSE bağlantısı
 	http.HandleFunc("/events/light", func(w http.ResponseWriter, r *http.Request) {
@@ -366,8 +392,13 @@ func main() {
 	// Static UI
 	fs := http.FileServer(http.Dir("./ui"))
 	http.Handle("/", fs)
-	fmt.Println("🚀 Tüm sistemler devrede! Sunucu 8080 portunda dinliyor...")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	fmt.Printf("🚀 Tüm sistemler devrede! Sunucu %s portunda dinliyor...\n", port)
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("❌ Sunucu çöktü: %v", err)
 	}
 }

@@ -88,8 +88,21 @@ func StartKafkaConsumer(broker string, groupID string, topics []string, eventCh 
 		return
 	}
 	defer c.Close()
+	if err := c.SubscribeTopics(topics, func(c *kafka.Consumer, event kafka.Event) error {
+		switch e := event.(type) {
+		case kafka.AssignedPartitions:
+			fmt.Printf("🔁 Consumer group rebalance: partitions assigned: %v\n", e.Partitions)
+			return c.Assign(e.Partitions)
 
-	if err := c.SubscribeTopics(topics, nil); err != nil {
+		case kafka.RevokedPartitions:
+			fmt.Printf("🔁 Consumer group rebalance: partitions revoked: %v\n", e.Partitions)
+			return c.Unassign()
+
+		default:
+			fmt.Printf("🔁 Consumer group rebalance event: %v\n", e)
+			return nil
+		}
+	}); err != nil {
 		fmt.Printf("❌ Topic aboneliği başarısız: %v\n", err)
 		return
 	}
