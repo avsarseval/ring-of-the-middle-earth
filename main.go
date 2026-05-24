@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+_ 	"net/http/pprof"
 	"os"
 
 	"ring-of-the-middle-earth/internal"

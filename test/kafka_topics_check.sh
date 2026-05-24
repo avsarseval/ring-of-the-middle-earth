@@ -16,6 +16,7 @@ TOPICS=(
   "game.events.unit"
   "game.events.region"
   "game.events.path"
+  "game.session"
 )
 
 for topic in "${TOPICS[@]}"; do
