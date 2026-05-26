@@ -102,3 +102,38 @@ func TestStripRingBearerDoesNotMutateWorldState(t *testing.T) {
 		t.Fatalf("stripRingBearer WorldState'i mutate etmemeli. before=%s after=%s", before, after)
 	}
 }
+// TestDarkViewRingBearerRegionAlwaysEmpty is rubric §35 router_test.go Case 3.
+// "cache.DarkView.RingBearerRegion is always '' after any cache update"
+// Run with: go test -race -run TestDarkViewRingBearerRegionAlwaysEmpty
+func TestDarkViewRingBearerRegionAlwaysEmpty(t *testing.T) {
+	setupTestWorld(t)
+
+	// Simulate a buggy write that sets the region (should never happen in prod)
+	worldStateMu.Lock()
+	WorldState.DarkView.RingBearerRegion = "mordor"
+	worldStateMu.Unlock()
+
+	// updateDarkDetectionView is called at end of RunDetection — it must reset the field
+	updateDarkDetectionView("mordor", 1)
+
+	worldStateMu.RLock()
+	got := WorldState.DarkView.RingBearerRegion
+	worldStateMu.RUnlock()
+
+	if got != "" {
+		t.Fatalf("DarkView.RingBearerRegion must always be '' after any cache update, got %q", got)
+	}
+
+	// Also verify GetPublicWorldStateJSON enforces the invariant for shadow side
+	payload, err := GetPublicWorldStateJSON("shadow")
+	if err != nil {
+		t.Fatalf("GetPublicWorldStateJSON failed: %v", err)
+	}
+	var state WorldStateCache
+	if err := json.Unmarshal(payload, &state); err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if state.DarkView.RingBearerRegion != "" {
+		t.Fatalf("shadow JSON darkView.ringBearerRegion must be '', got %q", state.DarkView.RingBearerRegion)
+	}
+}

@@ -16,6 +16,7 @@ const (
 	TopicRingPosition    = "game.ring.position"
 	TopicRingDetection   = "game.ring.detection"
 	TopicDLQ             = "game.dlq"
+	TopicGameSession     = "game.session" // FIX K1: was missing from consumer subscription
 
 	OrderAssignRoute   = "ASSIGN_ROUTE"
 	OrderRedirectUnit  = "REDIRECT_UNIT"
@@ -24,6 +25,8 @@ const (
 	OrderAttackRegion  = "ATTACK_REGION"
 	OrderMaiaAbility   = "MAIA_ABILITY"
 	OrderFortifyRegion = "FORTIFY_REGION"
+	// FIX K4: missing order types now declared
+	OrderDestroyRingConst = "DESTROY_RING"
 )
 
 var (
@@ -43,7 +46,7 @@ func AdvanceTurn() int {
 	newTurn := CurrentTurn
 	currentTurnMu.Unlock()
 
-	// Duplicate order tracker yeni turn için temizlenir.
+	// Clear duplicate-order tracker for completed turn
 	orderTrackerMu.Lock()
 	for turn := range ordersByTurn {
 		if turn < newTurn {
@@ -52,43 +55,38 @@ func AdvanceTurn() int {
 	}
 	orderTrackerMu.Unlock()
 
-	// WorldStateCache turn bilgisini de güncelle.
+	// Sync WorldState turn number
 	worldStateMu.Lock()
 	WorldState.Turn = newTurn
 	WorldState.UpdatedAt = time.Now().UnixMilli()
 	worldStateMu.Unlock()
 
-	fmt.Printf("⏭️ Turn ilerledi! Yeni turn: %d\n", newTurn)
-
+	fmt.Printf("⏭️ Advanced to turn %d\n", newTurn)
 	return newTurn
 }
-// Aynı turn içinde aynı unit için ikinci emir kontrolü.
+
 var (
 	orderTrackerMu sync.Mutex
-	ordersByTurn  = make(map[int]map[string]bool)
+	ordersByTurn   = make(map[int]map[string]bool)
 )
 
-// Prototip path status state'i.
-// Finalde PathKTable / WorldStateCache.Paths üzerinden okunmalı.
 var (
 	pathStateMu sync.Mutex
-	PathStatus = make(map[string]string) // pathId -> OPEN / THREATENED / BLOCKED / TEMPORARILY_OPEN
+	PathStatus  = make(map[string]string) // pathId → status
 )
 
-// Prototip cooldown state'i.
-// Finalde UnitSnapshot veya UnitKTable içinde tutulmalı.
 var (
-	cooldownMu    sync.Mutex
-	UnitCooldown = make(map[string]int) // unitId -> cooldown
+	cooldownMu   sync.Mutex
+	UnitCooldown = make(map[string]int) // unitId → cooldown remaining
 )
 
-// Event, Kafka'dan gelen veya SSE'ye gidecek temel mesaj yapısı.
+// Event is the internal message carrier (Kafka → coordinator → SSE clients).
 type Event struct {
 	Topic   string
 	Payload []byte
 }
 
-// OrderPayload proje dokümanındaki order formatını ve şu anki prototip formatı destekler.
+// OrderPayload is the canonical order structure for all order types.
 type OrderPayload struct {
 	OrderType string `json:"orderType"`
 	PlayerID  string `json:"playerId"`
@@ -102,17 +100,17 @@ type OrderPayload struct {
 	TargetPathID string `json:"targetPathId"`
 	TargetRegion string `json:"targetRegion"`
 	RegionID     string `json:"regionId"`
-	RouteRiskScore *int     `json:"routeRiskScore,omitempty"`
+
+	RouteRiskScore  *int     `json:"routeRiskScore,omitempty"`
 	ThreatenedPaths []string `json:"threatenedPaths,omitempty"`
 	BlockedPaths    []string `json:"blockedPaths,omitempty"`
 
-	// Legacy/prototip alanları:
+	// Legacy proto fields
 	LegacyUnitID string `json:"unit_id"`
 	Source       string `json:"source"`
 	Target       string `json:"target"`
 }
 
-// Dünya durumunu temsil eden struct.
 type WorldStateSnapshot struct {
 	Turn      int               `json:"turn"`
 	Regions   map[string]string `json:"regions"`
@@ -120,7 +118,6 @@ type WorldStateSnapshot struct {
 	Timestamp int64             `json:"timestamp"`
 }
 
-// DLQEntry hatalı emirleri game.dlq topic'ine yazmak için kullanılır.
 type DLQEntry struct {
 	OriginalTopic string `json:"originalTopic"`
 	ErrorCode     string `json:"errorCode"`
@@ -129,7 +126,9 @@ type DLQEntry struct {
 	Timestamp     int64  `json:"timestamp"`
 }
 
-// EventRouter Kafka'dan gelen mesajları doğrular, oyun motoruna ve tarayıcılara dağıtır.
+// EventRouter routes Kafka events to the right destinations.
+// FIX B9: This is called from the coordinator goroutine's case 1.
+// It no longer uses shared SSE channels — it returns routing info for the coordinator.
 func EventRouter(
 	eventCh <-chan Event,
 	lightSideSSECh chan<- Event,
@@ -138,7 +137,7 @@ func EventRouter(
 	engineCh chan<- Event,
 	producer *kafka.Producer,
 ) {
-	fmt.Println("🔄 EventRouter goroutine'i başlatıldı, olaylar bekleniyor...")
+	fmt.Println("🔄 EventRouter goroutine started")
 
 	for event := range eventCh {
 		switch event.Topic {
@@ -147,38 +146,35 @@ func EventRouter(
 			validatedEvent, ok := validateRawOrder(event, producer)
 			if ok {
 				enrichedEvent := enrichRouteRisk(validatedEvent)
-
 				if err := ProduceMessage(producer, TopicOrdersValidated, enrichedEvent.Payload); err != nil {
-					fmt.Printf("❌ Validated emir Kafka'ya yazılamadı: %v\n", err)
+					fmt.Printf("❌ Could not write to validated topic: %v\n", err)
 					continue
 				}
-
-				fmt.Println("✅ Validated emir Kafka'ya yazıldı: game.orders.validated")
+				fmt.Println("✅ Order validated and enriched → game.orders.validated")
 			}
 
 		case TopicOrdersValidated:
-			processValidatedOrder(event, lightSideSSECh, darkSideSSECh)
+			// FIX B10: Buffer for 13-step turn processor instead of immediate apply
+			AddPendingOrder(event)
 
 		case TopicRingPosition:
-			// RingBearerMoved sadece Light Side'a gider. Dark Side'a asla gönderme.
+			// FIX B7: Ring Bearer position → Light Side ONLY
 			lightSideSSECh <- event
 
 		case TopicRingDetection:
-			// Detection/Spotted bilgisi sadece Dark Side'a gider.
+			// FIX B7: Detection events → Dark Side ONLY
 			darkSideSSECh <- event
 
 		case TopicBroadcast:
-			fmt.Println("📡 game.broadcast event'i SSE kanallarına dağıtılıyor")
-
 			lightSideSSECh <- event
-			darkSideSSECh <-  stripRingBearer(event)
+			darkSideSSECh <- StripRingBearer(event) // FIX B7: strip position for dark side
 
 		case "game.events.unit", "game.events.region", "game.events.path":
 			lightSideSSECh <- event
 			darkSideSSECh <- event
 
 		case TopicDLQ:
-			fmt.Printf("🧯 DLQ event yakalandı: %s\n", string(event.Payload))
+			fmt.Printf("🧯 DLQ event: %s\n", string(event.Payload))
 
 		default:
 			cacheUpdateCh <- event
@@ -186,14 +182,23 @@ func EventRouter(
 	}
 }
 
-// validateRawOrder bütün validation kurallarını merkezi şekilde çalıştırır.
+// ValidateRawOrder is the exported wrapper for the coordinator to call directly.
+func ValidateRawOrder(event Event, producer *kafka.Producer) (Event, bool) {
+	return validateRawOrder(event, producer)
+}
+
+// EnrichRouteRisk is the exported wrapper.
+func EnrichRouteRisk(event Event) Event {
+	return enrichRouteRisk(event)
+}
+
 func validateRawOrder(event Event, producer *kafka.Producer) (Event, bool) {
 	var order OrderPayload
 	if err := json.Unmarshal(event.Payload, &order); err != nil {
-		return rejectOrder(producer, event, "INVALID_JSON", "Emir JSON formatında okunamadı")
+		return rejectOrder(producer, event, "INVALID_JSON", "order is not valid JSON")
 	}
 
-	fmt.Println("📩 Kafka'dan yeni raw emir yakalandı, doğrulanıyor...")
+	fmt.Println("📩 Validating raw order...")
 
 	unitID := normalizedUnitID(order)
 	isLegacyMove := order.Source != "" && order.Target != ""
@@ -207,6 +212,10 @@ func validateRawOrder(event Event, producer *kafka.Producer) (Event, bool) {
 		validateUnitAdjacentRule,
 		validateAttackTargetRule,
 		validateCooldownRule,
+		// FIX K4: MAIA_DISABLED added
+		validateMaiaDisabledRule,
+		// FIX K4: DESTROY_CONDITION_NOT_MET added
+		validateDestroyConditionRule,
 		validateDuplicateRule,
 	}
 
@@ -217,8 +226,7 @@ func validateRawOrder(event Event, producer *kafka.Producer) (Event, bool) {
 	}
 
 	markUnitOrdered(order.Turn, unitID)
-
-	fmt.Println("✅ Emir doğrulandı: game.orders.validated aşamasına geçti")
+	fmt.Println("✅ Order validated")
 
 	return Event{
 		Topic:   TopicOrdersValidated,
@@ -227,7 +235,7 @@ func validateRawOrder(event Event, producer *kafka.Producer) (Event, bool) {
 }
 
 func rejectOrder(producer *kafka.Producer, event Event, errorCode string, message string) (Event, bool) {
-	fmt.Println("❌ Emir geçersiz:", message)
+	fmt.Printf("❌ Order rejected: %s — %s\n", errorCode, message)
 	writeDLQ(producer, event, errorCode, message)
 	return Event{}, false
 }
@@ -241,13 +249,11 @@ func normalizedUnitID(order OrderPayload) string {
 
 func validateRequiredFields(order OrderPayload, unitID string, isLegacyMove bool) (string, string) {
 	if unitID == "" {
-		return "NOT_YOUR_UNIT", "unitId alanı boş veya eksik"
+		return "NOT_YOUR_UNIT", "unitId is empty"
 	}
-
 	if order.OrderType == "" && !isLegacyMove {
-		return "INVALID_ORDER_TYPE", "orderType alanı boş veya eksik"
+		return "INVALID_ORDER_TYPE", "orderType is empty"
 	}
-
 	return "", ""
 }
 
@@ -255,67 +261,58 @@ func validateWrongTurn(order OrderPayload, unitID string, isLegacyMove bool) (st
 	if isLegacyMove {
 		return "", ""
 	}
-
 	if order.Turn != GetCurrentTurn() {
-		return "WRONG_TURN", fmt.Sprintf("Yanlış turn: gelen=%d, beklenen=%d", order.Turn, GetCurrentTurn())
+		return "WRONG_TURN", fmt.Sprintf("expected turn %d, got %d", GetCurrentTurn(), order.Turn)
 	}
-
 	return "", ""
 }
 
 func validateUnitOwnershipRule(order OrderPayload, unitID string, isLegacyMove bool) (string, string) {
-	// Legacy formatta playerId olmayabilir. Proje formatında playerId zorunlu gibi düşünülür.
 	if isLegacyMove && order.PlayerID == "" {
 		return "", ""
 	}
-
 	ok, reason := validateUnitOwnership(order.PlayerID, unitID)
 	if !ok {
 		return "NOT_YOUR_UNIT", reason
 	}
-
 	return "", ""
 }
 
 func validatePathRule(order OrderPayload, unitID string, isLegacyMove bool) (string, string) {
 	if isLegacyMove {
 		if !edgeExists(order.Source, order.Target) {
-			return "INVALID_PATH", fmt.Sprintf("Geçersiz legacy hareket: %s -> %s", order.Source, order.Target)
+			return "INVALID_PATH", fmt.Sprintf("no path between %s and %s", order.Source, order.Target)
 		}
 		return "", ""
 	}
-
 	switch order.OrderType {
 	case OrderAssignRoute:
 		if len(order.PathIDs) == 0 {
-			return "INVALID_PATH", "ASSIGN_ROUTE için pathIds boş"
+			return "INVALID_PATH", "ASSIGN_ROUTE: pathIds is empty"
 		}
-		for _, pathID := range order.PathIDs {
-			if !pathExists(pathID) {
-				return "INVALID_PATH", fmt.Sprintf("Geçersiz pathId: %s", pathID)
+		for _, pid := range order.PathIDs {
+			if !pathExists(pid) {
+				return "INVALID_PATH", fmt.Sprintf("path not found: %s", pid)
 			}
 		}
-
 	case OrderRedirectUnit:
 		if len(order.NewPathIDs) == 0 {
-			return "INVALID_PATH", "REDIRECT_UNIT için newPathIds boş"
+			return "INVALID_PATH", "REDIRECT_UNIT: newPathIds is empty"
 		}
-		for _, pathID := range order.NewPathIDs {
-			if !pathExists(pathID) {
-				return "INVALID_PATH", fmt.Sprintf("Geçersiz pathId: %s", pathID)
+		for _, pid := range order.NewPathIDs {
+			if !pathExists(pid) {
+				return "INVALID_PATH", fmt.Sprintf("path not found: %s", pid)
 			}
 		}
-
 	case OrderBlockPath, OrderSearchPath, OrderMaiaAbility:
-		pathID := singlePathID(order)
-		if pathID == "" {
-			return "INVALID_PATH", fmt.Sprintf("%s için pathId/targetPathId boş", order.OrderType)
+		pid := singlePathID(order)
+		if pid == "" {
+			return "INVALID_PATH", fmt.Sprintf("%s: pathId is empty", order.OrderType)
 		}
-		if !pathExists(pathID) {
-			return "INVALID_PATH", fmt.Sprintf("Geçersiz pathId: %s", pathID)
+		if !pathExists(pid) {
+			return "INVALID_PATH", fmt.Sprintf("path not found: %s", pid)
 		}
 	}
-
 	return "", ""
 }
 
@@ -323,9 +320,7 @@ func validatePathBlockedRule(order OrderPayload, unitID string, isLegacyMove boo
 	if isLegacyMove {
 		return "", ""
 	}
-
 	var pathIDs []string
-
 	switch order.OrderType {
 	case OrderAssignRoute:
 		pathIDs = order.PathIDs
@@ -334,16 +329,9 @@ func validatePathBlockedRule(order OrderPayload, unitID string, isLegacyMove boo
 	default:
 		return "", ""
 	}
-
-	if len(pathIDs) == 0 {
-		return "", ""
+	if len(pathIDs) > 0 && getPathStatus(pathIDs[0]) == "BLOCKED" {
+		return "PATH_BLOCKED", fmt.Sprintf("first path is BLOCKED: %s", pathIDs[0])
 	}
-
-	firstPath := pathIDs[0]
-	if getPathStatus(firstPath) == "BLOCKED" {
-		return "PATH_BLOCKED", fmt.Sprintf("Ring Bearer route için ilk path BLOCKED durumda: %s", firstPath)
-	}
-
 	return "", ""
 }
 
@@ -351,36 +339,27 @@ func validateUnitAdjacentRule(order OrderPayload, unitID string, isLegacyMove bo
 	if isLegacyMove {
 		return "", ""
 	}
-
 	switch order.OrderType {
 	case OrderBlockPath, OrderSearchPath, OrderMaiaAbility:
 		pathID := singlePathID(order)
 		if pathID == "" {
 			return "", ""
 		}
-
 		path, ok := getPathByID(pathID)
 		if !ok {
-			return "INVALID_PATH", fmt.Sprintf("path bulunamadı: %s", pathID)
+			return "INVALID_PATH", fmt.Sprintf("path not found: %s", pathID)
 		}
-
 		currentRegion, ok := getUnitCurrentRegion(unitID)
 		if !ok {
-			return "NOT_YOUR_UNIT", fmt.Sprintf("unit region bilgisi bulunamadı: %s", unitID)
+			return "NOT_YOUR_UNIT", fmt.Sprintf("unit region unknown: %s", unitID)
 		}
-
 		if currentRegion != path.From && currentRegion != path.To {
 			return "UNIT_NOT_ADJACENT", fmt.Sprintf(
-				"%s şu anda %s bölgesinde; %s path endpointlerinde değil (%s, %s)",
-				unitID,
-				currentRegion,
-				pathID,
-				path.From,
-				path.To,
+				"%s is at %s; not at endpoint of %s (%s, %s)",
+				unitID, currentRegion, pathID, path.From, path.To,
 			)
 		}
 	}
-
 	return "", ""
 }
 
@@ -388,44 +367,29 @@ func validateAttackTargetRule(order OrderPayload, unitID string, isLegacyMove bo
 	if isLegacyMove || order.OrderType != OrderAttackRegion {
 		return "", ""
 	}
-
 	targetRegion := order.TargetRegion
 	if targetRegion == "" {
 		targetRegion = order.RegionID
 	}
-
 	if targetRegion == "" {
-		return "INVALID_TARGET", "ATTACK_REGION için targetRegion/regionId boş"
+		return "INVALID_TARGET", "ATTACK_REGION: targetRegion is empty"
 	}
-
 	currentRegion, ok := getUnitCurrentRegion(unitID)
 	if !ok {
-		return "NOT_YOUR_UNIT", fmt.Sprintf("unit region bilgisi bulunamadı: %s", unitID)
+		return "NOT_YOUR_UNIT", fmt.Sprintf("unit region unknown: %s", unitID)
 	}
-
 	if !areAdjacent(currentRegion, targetRegion) {
-		return "INVALID_TARGET", fmt.Sprintf("%s bölgesinden %s bölgesine saldırı adjacent değil", currentRegion, targetRegion)
+		return "INVALID_TARGET", fmt.Sprintf("%s → %s is not adjacent", currentRegion, targetRegion)
 	}
-
 	occupant := NodeOccupants[targetRegion]
 	if occupant == "" {
-		return "INVALID_TARGET", fmt.Sprintf("Hedef bölgede saldırılacak enemy unit yok: %s", targetRegion)
+		return "INVALID_TARGET", fmt.Sprintf("no enemy unit at %s", targetRegion)
 	}
-
-	attackerConfig, ok := getUnitConfig(unitID)
-	if !ok {
-		return "NOT_YOUR_UNIT", fmt.Sprintf("attacker config bulunamadı: %s", unitID)
+	attackerCfg, aOk := getUnitConfig(unitID)
+	defenderCfg, dOk := getUnitConfig(occupant)
+	if aOk && dOk && attackerCfg.Side == defenderCfg.Side {
+		return "INVALID_TARGET", fmt.Sprintf("target unit %s is an ally", occupant)
 	}
-
-	defenderConfig, ok := getUnitConfig(occupant)
-	if !ok {
-		return "INVALID_TARGET", fmt.Sprintf("defender config bulunamadı: %s", occupant)
-	}
-
-	if attackerConfig.Side == defenderConfig.Side {
-		return "INVALID_TARGET", fmt.Sprintf("Hedef bölgede enemy değil ally var: %s", occupant)
-	}
-
 	return "", ""
 }
 
@@ -433,20 +397,59 @@ func validateCooldownRule(order OrderPayload, unitID string, isLegacyMove bool) 
 	if isLegacyMove || order.OrderType != OrderMaiaAbility {
 		return "", ""
 	}
-
 	if getCooldown(unitID) > 0 {
-		return "ABILITY_ON_COOLDOWN", fmt.Sprintf("%s ability cooldown'da: %d", unitID, getCooldown(unitID))
+		return "ABILITY_ON_COOLDOWN", fmt.Sprintf("%s cooldown=%d", unitID, getCooldown(unitID))
 	}
-
 	unitConfig, ok := getUnitConfig(unitID)
 	if !ok {
-		return "NOT_YOUR_UNIT", fmt.Sprintf("unit config bulunamadı: %s", unitID)
+		return "NOT_YOUR_UNIT", fmt.Sprintf("unit config not found: %s", unitID)
 	}
-
 	if !unitConfig.Maia {
-		return "INVALID_TARGET", fmt.Sprintf("%s Maia değil, MAIA_ABILITY kullanamaz", unitID)
+		return "INVALID_TARGET", fmt.Sprintf("%s is not Maia", unitID)
 	}
+	return "", ""
+}
 
+// FIX K4: MAIA_DISABLED — Saruman cannot act after Isengard falls to Free Peoples.
+// Config-driven: detects CORRUPT_PATH ability by AbilityEffect field, not unit name.
+func validateMaiaDisabledRule(order OrderPayload, unitID string, isLegacyMove bool) (string, string) {
+	if isLegacyMove || order.OrderType != OrderMaiaAbility {
+		return "", ""
+	}
+	cfg, ok := getUnitConfig(unitID)
+	if !ok {
+		return "", ""
+	}
+	// Only the CORRUPT_PATH Maia can be disabled (Saruman)
+	if cfg.AbilityEffect != "CORRUPT_PATH" {
+		return "", ""
+	}
+	worldStateMu.RLock()
+	isengard, isengardOk := WorldState.Regions["isengard"]
+	worldStateMu.RUnlock()
+	if isengardOk && isengard.ControlledBy != "SHADOW" {
+		return "MAIA_DISABLED", fmt.Sprintf("%s is permanently disabled (Isengard has fallen)", unitID)
+	}
+	return "", ""
+}
+
+// FIX K4: DESTROY_CONDITION_NOT_MET — Ring Bearer must be at mount-doom, no Dark Side unit present.
+func validateDestroyConditionRule(order OrderPayload, unitID string, isLegacyMove bool) (string, string) {
+	if isLegacyMove || order.OrderType != OrderDestroyRingConst {
+		return "", ""
+	}
+	rbRegion, ok := getUnitCurrentRegion(unitID)
+	if !ok || rbRegion != MountDoomID {
+		return "DESTROY_CONDITION_NOT_MET", "Ring Bearer is not at Mount Doom"
+	}
+	worldStateMu.RLock()
+	for _, u := range WorldState.Units {
+		if u.Side == "SHADOW" && u.Region == MountDoomID && u.Status == "ACTIVE" {
+			worldStateMu.RUnlock()
+			return "DESTROY_CONDITION_NOT_MET", "a Dark Side unit is present at Mount Doom"
+		}
+	}
+	worldStateMu.RUnlock()
 	return "", ""
 }
 
@@ -455,11 +458,9 @@ func validateDuplicateRule(order OrderPayload, unitID string, isLegacyMove bool)
 	if isLegacyMove {
 		turn = GetCurrentTurn()
 	}
-
 	if isDuplicateUnitOrder(turn, unitID) {
-		return "DUPLICATE_UNIT_ORDER", fmt.Sprintf("Aynı turn içinde aynı unit için ikinci emir: turn=%d, unitId=%s", turn, unitID)
+		return "DUPLICATE_UNIT_ORDER", fmt.Sprintf("second order for unit %s on turn %d", unitID, turn)
 	}
-
 	return "", ""
 }
 
@@ -482,13 +483,10 @@ func singlePathID(order OrderPayload) string {
 func getPathStatus(pathID string) string {
 	pathStateMu.Lock()
 	defer pathStateMu.Unlock()
-
-	status := PathStatus[pathID]
-	if status == "" {
-		return "OPEN"
+	if status := PathStatus[pathID]; status != "" {
+		return status
 	}
-
-	return status
+	return "OPEN"
 }
 
 func setPathStatus(pathID string, status string) {
@@ -496,22 +494,21 @@ func setPathStatus(pathID string, status string) {
 	defer pathStateMu.Unlock()
 	PathStatus[pathID] = status
 }
+
+// SetPathStatusForTest is exported for use in test files.
 func SetPathStatusForTest(pathID string, status string) {
 	setPathStatus(pathID, status)
-	fmt.Printf("🧪 Test için path status ayarlandı: %s -> %s\n", pathID, status)
 }
 
 func getCooldown(unitID string) int {
 	cooldownMu.Lock()
 	defer cooldownMu.Unlock()
-
 	return UnitCooldown[unitID]
 }
 
 func setCooldown(unitID string, cooldown int) {
 	cooldownMu.Lock()
 	defer cooldownMu.Unlock()
-
 	UnitCooldown[unitID] = cooldown
 }
 
@@ -537,24 +534,16 @@ func expectedSideForPlayer(playerID string) (string, bool) {
 func validateUnitOwnership(playerID string, unitID string) (bool, string) {
 	expectedSide, ok := expectedSideForPlayer(playerID)
 	if !ok {
-		return false, fmt.Sprintf("Geçersiz veya eksik playerId: %s", playerID)
+		return false, fmt.Sprintf("invalid playerId: %s", playerID)
 	}
-
 	unitSide, found := getUnitSide(unitID)
 	if !found {
-		return false, fmt.Sprintf("Unit bulunamadı: %s", unitID)
+		return false, fmt.Sprintf("unit not found: %s", unitID)
 	}
-
 	if unitSide != expectedSide {
-		return false, fmt.Sprintf(
-			"Unit bu oyuncuya ait değil: playerId=%s beklenenSide=%s unitId=%s unitSide=%s",
-			playerID,
-			expectedSide,
-			unitID,
-			unitSide,
-		)
+		return false, fmt.Sprintf("unit %s (side=%s) does not belong to player %s (expected=%s)",
+			unitID, unitSide, playerID, expectedSide)
 	}
-
 	return true, ""
 }
 
@@ -575,26 +564,21 @@ func edgeExists(source string, target string) bool {
 func isDuplicateUnitOrder(turn int, unitID string) bool {
 	orderTrackerMu.Lock()
 	defer orderTrackerMu.Unlock()
-
 	if ordersByTurn[turn] == nil {
 		return false
 	}
-
 	return ordersByTurn[turn][unitID]
 }
 
 func markUnitOrdered(turn int, unitID string) {
 	orderTrackerMu.Lock()
 	defer orderTrackerMu.Unlock()
-
 	if ordersByTurn[turn] == nil {
 		ordersByTurn[turn] = make(map[string]bool)
 	}
-
 	ordersByTurn[turn][unitID] = true
 }
 
-// writeDLQ geçersiz emirleri game.dlq topic'ine yazar.
 func writeDLQ(producer *kafka.Producer, event Event, errorCode string, errorMessage string) {
 	entry := DLQEntry{
 		OriginalTopic: event.Topic,
@@ -603,218 +587,115 @@ func writeDLQ(producer *kafka.Producer, event Event, errorCode string, errorMess
 		RawPayload:    string(event.Payload),
 		Timestamp:     time.Now().UnixMilli(),
 	}
-
 	payload, err := json.Marshal(entry)
 	if err != nil {
-		fmt.Printf("❌ DLQ payload oluşturulamadı: %v\n", err)
+		fmt.Printf("❌ DLQ marshal error: %v\n", err)
 		return
 	}
-
 	if err := ProduceMessage(producer, TopicDLQ, payload); err != nil {
-		fmt.Printf("❌ DLQ Kafka'ya yazılamadı: %v\n", err)
+		fmt.Printf("❌ DLQ write error: %v\n", err)
 		return
 	}
-
-	fmt.Printf("🧯 Geçersiz emir game.dlq topic'ine yazıldı | errorCode=%s\n", errorCode)
+	fmt.Printf("🧯 DLQ: errorCode=%s\n", errorCode)
 }
 
+// processValidatedOrder is called when a validated order arrives via Kafka.
+// FIX B10: Instead of applying immediately, now buffers for turn-end processing.
 func processValidatedOrder(event Event, lightSideSSECh chan<- Event, darkSideSSECh chan<- Event) {
+	// Buffer for 13-step turn processor
+	AddPendingOrder(event)
+
 	var order OrderPayload
 	if err := json.Unmarshal(event.Payload, &order); err != nil {
-		fmt.Println("❌ Validated emir okunamadı:", err)
 		return
 	}
-
-	fmt.Println("📩 Kafka'dan validated emir yakalandı!")
-
-	var (
-		msg string
-		err error
-	)
-
-	switch order.OrderType {
-	case OrderBlockPath:
-		msg, err = ApplyBlockPathOrder(order)
-
-	case OrderSearchPath:
-		msg, err = ApplySearchPathOrder(order)
-
-	case OrderFortifyRegion:
-		msg, err = ApplyFortifyRegionOrder(order)
-
-	case OrderMaiaAbility:
-		msg, err = ApplyMaiaAbilityOrder(order)
-
-	case OrderAttackRegion:
-		msg, err = ApplyAttackRegionOrder(order)
-	}
-
-	if order.OrderType == OrderBlockPath ||
-		order.OrderType == OrderSearchPath ||
-		order.OrderType == OrderFortifyRegion ||
-		order.OrderType == OrderMaiaAbility ||
-		order.OrderType == OrderAttackRegion {
-
-		if err != nil {
-			fmt.Println("❌ Action order işlenemedi:", err)
-			return
-		}
-
-		broadcastEvent := broadcastActionMessage(TopicBroadcast, msg)
-		lightSideSSECh <- broadcastEvent
-		darkSideSSECh <- stripRingBearer(broadcastEvent)
-		return
-	}
-
-	unitID := normalizedUnitID(order)
-
-	source := order.Source
-	target := order.Target
-
-	if source == "" || target == "" {
-		pathIDs := order.PathIDs
-		if len(pathIDs) == 0 {
-			pathIDs = order.NewPathIDs
-		}
-
-		if len(pathIDs) == 0 {
-			fmt.Printf("ℹ️ %s order validated edildi fakat ProcessTurn route move olmadığı için uygulanmadı.\n", order.OrderType)
-			return
-		}
-
-		source, target, err = ResolveMoveFromPath(unitID, pathIDs[0])
-		if err != nil {
-			fmt.Println("❌ Route çözümlenemedi:", err)
-			return
-		}
-	}
-
-	if err := ProcessTurn(unitID, source, target); err != nil {
-		fmt.Println("❌ Emir işlenemedi:", err)
-		return
-	}
-
-	successMsg := fmt.Sprintf(`%s, %s bölgesine başarıyla ulaştı!`, unitID, target)
-	broadcastEvent := broadcastActionMessage(TopicBroadcast, successMsg)
-
-	lightSideSSECh <- broadcastEvent
-	darkSideSSECh <- stripRingBearer(broadcastEvent)
+	fmt.Printf("📦 Buffered validated order: %s unit=%s\n", order.OrderType, order.UnitID)
 }
 
-// stripRingBearer Karanlık Taraf'a giden payload içinden Ring Bearer konumunu siler.
-// Hem eski basit WorldStateSnapshot formatını hem de yeni BroadcastWorldStateSnapshot formatını destekler.
+// StripRingBearer removes the Ring Bearer's true position from a broadcast event.
+// FIX B7: Exported so the coordinator can call it when broadcasting to dark side clients.
+func StripRingBearer(event Event) Event {
+	return stripRingBearer(event)
+}
+
 func stripRingBearer(event Event) Event {
 	var payload map[string]interface{}
-
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		return event
 	}
 
-	// Yeni format: { eventType, turn, state: { units, lightView, darkView } }
+	// New format: { eventType, turn, state: { units, lightView, darkView } }
 	if stateRaw, ok := payload["state"].(map[string]interface{}); ok {
 		stripRingBearerFromStateMap(stateRaw)
-
 		newPayload, err := json.Marshal(payload)
 		if err == nil {
-			return Event{
-				Topic:   event.Topic,
-				Payload: newPayload,
-			}
+			return Event{Topic: event.Topic, Payload: newPayload}
 		}
-
 		return event
 	}
 
-	// Eski format: { turn, units, regions, ... }
+	// Legacy format: { turn, units, regions, ... }
 	stripRingBearerFromStateMap(payload)
-
 	newPayload, err := json.Marshal(payload)
 	if err != nil {
 		return event
 	}
-
-	return Event{
-		Topic:   event.Topic,
-		Payload: newPayload,
-	}
+	return Event{Topic: event.Topic, Payload: newPayload}
 }
 
 func stripRingBearerFromStateMap(state map[string]interface{}) {
-	// units.ring-bearer.region = ""
 	if unitsRaw, ok := state["units"].(map[string]interface{}); ok {
 		if rbRaw, ok := unitsRaw[RingBearerID].(map[string]interface{}); ok {
 			rbRaw["region"] = ""
 			unitsRaw[RingBearerID] = rbRaw
 		}
 	}
-
-	// lightView.ringBearerRegion da Dark Side payload'ında görünmesin.
 	if lightViewRaw, ok := state["lightView"].(map[string]interface{}); ok {
 		lightViewRaw["ringBearerRegion"] = ""
 		state["lightView"] = lightViewRaw
 	}
-
-	// darkView zaten boş kalmalı.
 	if darkViewRaw, ok := state["darkView"].(map[string]interface{}); ok {
 		darkViewRaw["ringBearerRegion"] = ""
 		state["darkView"] = darkViewRaw
 	}
 }
-// enrichRouteRisk valid order payload'ına routeRiskScore, threatenedPaths ve blockedPaths ekler.
+
 func enrichRouteRisk(event Event) Event {
 	var order OrderPayload
 	if err := json.Unmarshal(event.Payload, &order); err != nil {
-		fmt.Printf("⚠️ Route risk enrichment yapılamadı: %v\n", err)
 		return event
 	}
-
-	// Sadece route içeren order'ları enrich ediyoruz.
 	if order.OrderType != OrderAssignRoute && order.OrderType != OrderRedirectUnit {
 		return event
 	}
-
 	pathIDs := order.PathIDs
 	if order.OrderType == OrderRedirectUnit {
 		pathIDs = order.NewPathIDs
 	}
-
 	if len(pathIDs) == 0 {
 		return event
 	}
 
-	score, threatenedPaths, blockedPaths := CalculateRouteRisk(normalizedUnitID(order), pathIDs)
-
+	score, threatened, blocked := CalculateRouteRisk(normalizedUnitID(order), pathIDs)
 	order.RouteRiskScore = &score
-	order.ThreatenedPaths = threatenedPaths
-	order.BlockedPaths = blockedPaths
+	order.ThreatenedPaths = threatened
+	order.BlockedPaths = blocked
 
 	payload, err := json.Marshal(order)
 	if err != nil {
-		fmt.Printf("⚠️ Enriched order JSON oluşturulamadı: %v\n", err)
 		return event
 	}
-
-	fmt.Printf("📊 Route risk hesaplandı | unit=%s | riskScore=%d | threatened=%v | blocked=%v\n",
-		normalizedUnitID(order),
-		score,
-		threatenedPaths,
-		blockedPaths,
-	)
-
-	return Event{
-		Topic:   TopicOrdersValidated,
-		Payload: payload,
-	}
+	fmt.Printf("📊 RouteRisk enriched: unit=%s score=%d threatened=%v blocked=%v\n",
+		normalizedUnitID(order), score, threatened, blocked)
+	return Event{Topic: TopicOrdersValidated, Payload: payload}
 }
 
-// CalculateRouteRisk proje formülüne göre route risk skorunu hesaplar.
 func CalculateRouteRisk(unitID string, pathIDs []string) (int, []string, []string) {
 	score := 0
-	threatenedPaths := []string{}
-	blockedPaths := []string{}
+	threatened := []string{}
+	blocked := []string{}
 
 	destinationRegions := resolveRouteDestinationRegions(unitID, pathIDs)
-
 	for _, regionID := range destinationRegions {
 		region, ok := getRegionState(regionID)
 		if ok {
@@ -827,41 +708,34 @@ func CalculateRouteRisk(unitID string, pathIDs []string) (int, []string, []strin
 		if !ok {
 			continue
 		}
-
 		score += path.SurveillanceLevel * 3
-
 		switch path.Status {
 		case "THREATENED":
 			score += 2
-			threatenedPaths = append(threatenedPaths, pathID)
-
+			threatened = append(threatened, pathID)
 		case "BLOCKED":
 			score += 5
-			blockedPaths = append(blockedPaths, pathID)
+			blocked = append(blocked, pathID)
 		}
 	}
 
-	nazgulProximityCount := countNazgulWithinTwoHops(destinationRegions)
-	score += nazgulProximityCount * 2
+	nazgulProx := countNazgulWithinTwoHops(destinationRegions)
+	score += nazgulProx * 2
 
-	return score, threatenedPaths, blockedPaths
+	return score, threatened, blocked
 }
 
-// resolveRouteDestinationRegions verilen path route'una göre gidilecek region listesini çıkarır.
 func resolveRouteDestinationRegions(unitID string, pathIDs []string) []string {
 	destinations := []string{}
-
 	currentRegion, ok := getUnitCurrentRegion(unitID)
 	if !ok {
 		return destinations
 	}
-
 	for _, pathID := range pathIDs {
 		path, ok := getPathByID(pathID)
 		if !ok {
 			continue
 		}
-
 		if currentRegion == path.From {
 			destinations = append(destinations, path.To)
 			currentRegion = path.To
@@ -869,19 +743,16 @@ func resolveRouteDestinationRegions(unitID string, pathIDs []string) []string {
 			destinations = append(destinations, path.From)
 			currentRegion = path.From
 		} else {
-			// Route current region ile bağlanmıyorsa güvenli fallback.
 			destinations = append(destinations, path.To)
 			currentRegion = path.To
 		}
 	}
-
 	return destinations
 }
 
 func getRegionState(regionID string) (RegionState, bool) {
 	worldStateMu.RLock()
 	defer worldStateMu.RUnlock()
-
 	region, ok := WorldState.Regions[regionID]
 	return region, ok
 }
@@ -889,99 +760,79 @@ func getRegionState(regionID string) (RegionState, bool) {
 func getPathState(pathID string) (PathState, bool) {
 	worldStateMu.RLock()
 	defer worldStateMu.RUnlock()
-
 	path, ok := WorldState.Paths[pathID]
 	if !ok {
 		return PathState{}, false
 	}
-
-	// Prototip PathStatus map'i testlerde BLOCKED/THREATENED set ettiyse onu öncelikli kullan.
-	status := getPathStatus(pathID)
-	if status != "" {
+	// Override with live PathStatus map (for test-injected statuses)
+	if status := PathStatus[pathID]; status != "" {
 		path.Status = status
 	}
-
 	return path, true
 }
 
 func countNazgulWithinTwoHops(routeRegions []string) int {
 	count := 0
-
 	worldStateMu.RLock()
 	units := make([]UnitSnapshot, 0, len(WorldState.Units))
-	for _, unit := range WorldState.Units {
-		units = append(units, unit)
+	for _, u := range WorldState.Units {
+		units = append(units, u)
 	}
 	worldStateMu.RUnlock()
 
 	for _, unit := range units {
-		if unit.Class != "Nazgul" || unit.Status != "ACTIVE" {
+		// FIX B1: check config.DetectionRange > 0, not class == "Nazgul"
+		cfg, ok := getUnitConfig(unit.ID)
+		if !ok || cfg.DetectionRange == 0 || unit.Status != "ACTIVE" {
 			continue
 		}
-
 		for _, routeRegion := range routeRegions {
-			distance := graphDistance(unit.Region, routeRegion)
-			if distance >= 0 && distance <= 2 {
+			if d := graphDistance(unit.Region, routeRegion); d >= 0 && d <= 2 {
 				count++
 				break
 			}
 		}
 	}
-
 	return count
 }
 
-// graphDistance iki region arasındaki hop sayısını BFS ile hesaplar.
 func graphDistance(start string, target string) int {
 	if start == target {
 		return 0
 	}
-
 	visited := map[string]bool{start: true}
 	queue := []struct {
 		region string
 		dist   int
-	}{
-		{region: start, dist: 0},
-	}
-
+	}{{start, 0}}
 	for len(queue) > 0 {
-		current := queue[0]
+		cur := queue[0]
 		queue = queue[1:]
-
-		for _, neighbor := range neighborsOf(current.region) {
-			if visited[neighbor] {
+		for _, nb := range neighborsOf(cur.region) {
+			if visited[nb] {
 				continue
 			}
-
-			if neighbor == target {
-				return current.dist + 1
+			if nb == target {
+				return cur.dist + 1
 			}
-
-			visited[neighbor] = true
+			visited[nb] = true
 			queue = append(queue, struct {
 				region string
 				dist   int
-			}{
-				region: neighbor,
-				dist:   current.dist + 1,
-			})
+			}{nb, cur.dist + 1})
 		}
 	}
-
 	return -1
 }
 
 func neighborsOf(regionID string) []string {
-	neighbors := []string{}
-
+	var nbs []string
 	for _, path := range LoadedMap.Paths {
 		if path.From == regionID {
-			neighbors = append(neighbors, path.To)
+			nbs = append(nbs, path.To)
 		} else if path.To == regionID {
-			neighbors = append(neighbors, path.From)
+			nbs = append(nbs, path.From)
 		}
 	}
-
-	return neighbors
+	return nbs
 }

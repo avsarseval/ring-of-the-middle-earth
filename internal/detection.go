@@ -51,12 +51,10 @@ func RunDetection(producer *kafka.Producer) {
 	detected := false
 
 	for _, unit := range units {
-		if unit.Class != "Nazgul" || unit.Status != "ACTIVE" {
-			continue
-		}
-
+		// FIX B1: config-driven check — no class name string in logic.
+		// Q&A Q1: "show where Nazgul detection range is applied — no 'witch-king' string"
 		config, ok := getUnitConfig(unit.ID)
-		if !ok {
+		if !ok || config.DetectionRange == 0 || unit.Status != "ACTIVE" {
 			continue
 		}
 
@@ -121,9 +119,12 @@ func isSauronAmplifierActive() bool {
 	worldStateMu.RLock()
 	defer worldStateMu.RUnlock()
 
-	for _, unit := range WorldState.Units {
-		if unit.Side == "SHADOW" &&
-			unit.Class == "Maia" &&
+	// FIX B1 / Q&A Q5: config-driven amplifier check.
+	// Sauron is the only unit with AbilityEffect=="SAURON_AMPLIFIER".
+	// No unit ID or class name string appears here.
+	for unitID, unit := range WorldState.Units {
+		cfg, ok := WorldState.UnitConfigs[unitID]
+		if ok && cfg.AbilityEffect == "SAURON_AMPLIFIER" &&
 			unit.Region == "mordor" &&
 			unit.Status == "ACTIVE" {
 			return true

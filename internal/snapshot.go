@@ -8,6 +8,7 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
+// BroadcastWorldStateSnapshot is the full world state broadcast payload.
 type BroadcastWorldStateSnapshot struct {
 	EventType string          `json:"eventType"`
 	Turn      int             `json:"turn"`
@@ -15,29 +16,36 @@ type BroadcastWorldStateSnapshot struct {
 	Timestamp int64           `json:"timestamp"`
 }
 
-// PublishWorldStateSnapshot turn sonunda WorldStateSnapshot event'ini game.broadcast topic'ine yazar.
-func PublishWorldStateSnapshot(producer *kafka.Producer) {
+// BuildWorldStateSnapshot creates a snapshot struct without publishing it.
+// Used by HTTP endpoints and the coordinator's broadcastWorldState helper.
+func BuildWorldStateSnapshot() BroadcastWorldStateSnapshot {
 	worldStateMu.RLock()
-	stateCopy := WorldState
+	stateCopy := copyWorldState(WorldState)
 	worldStateMu.RUnlock()
 
-	snapshot := BroadcastWorldStateSnapshot{
+	return BroadcastWorldStateSnapshot{
 		EventType: "WorldStateSnapshot",
 		Turn:      GetCurrentTurn(),
 		State:     stateCopy,
 		Timestamp: time.Now().UnixMilli(),
 	}
+}
+
+// PublishWorldStateSnapshot marshals the snapshot and writes it to game.broadcast.
+// Called at the end of each turn by RunFullTurnProcessing.
+func PublishWorldStateSnapshot(producer *kafka.Producer) {
+	snapshot := BuildWorldStateSnapshot()
 
 	payload, err := json.Marshal(snapshot)
 	if err != nil {
-		fmt.Printf("❌ WorldStateSnapshot JSON oluşturulamadı: %v\n", err)
+		fmt.Printf("❌ WorldStateSnapshot marshal error: %v\n", err)
 		return
 	}
 
 	if err := ProduceMessage(producer, TopicBroadcast, payload); err != nil {
-		fmt.Printf("❌ WorldStateSnapshot Kafka'ya yazılamadı: %v\n", err)
+		fmt.Printf("❌ WorldStateSnapshot write error: %v\n", err)
 		return
 	}
 
-	fmt.Printf("📡 WorldStateSnapshot game.broadcast topic'ine yazıldı | turn=%d\n", GetCurrentTurn())
+	fmt.Printf("📡 WorldStateSnapshot → game.broadcast (turn=%d)\n", GetCurrentTurn())
 }

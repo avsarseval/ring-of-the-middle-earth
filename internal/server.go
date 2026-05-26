@@ -15,7 +15,7 @@ func StartServer(port string, lightSideSSECh <-chan Event, darkSideSSECh <-chan 
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
 		fmt.Println("📡 Işık Tarafı (Tarayıcı) sunucuya bağlandı!")
-		
+
 		for event := range lightSideSSECh {
 			// SSE formatında veriyi tarayıcıya yaz
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Topic, event.Payload)
@@ -31,7 +31,7 @@ func StartServer(port string, lightSideSSECh <-chan Event, darkSideSSECh <-chan 
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
 		fmt.Println("📡 Karanlık Taraf (Tarayıcı) sunucuya bağlandı!")
-		
+
 		for event := range darkSideSSECh {
 			// SSE formatında veriyi tarayıcıya yaz
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Topic, event.Payload)
@@ -45,7 +45,7 @@ func StartServer(port string, lightSideSSECh <-chan Event, darkSideSSECh <-chan 
 			http.Error(w, "Sadece POST metodu kabul edilir", http.StatusMethodNotAllowed)
 			return
 		}
-		
+
 		// İleride burada gelen emri okuyup Kafka'ya (game.orders.raw) göndereceğiz.
 		w.WriteHeader(http.StatusAccepted)
 		fmt.Fprintln(w, "Emir alındı, doğrulama için Kafka'ya gönderiliyor...")

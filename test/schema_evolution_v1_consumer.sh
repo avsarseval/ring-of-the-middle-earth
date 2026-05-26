@@ -10,7 +10,7 @@ echo "Extra V2 fields such as routeRiskScore, threatenedPaths, blockedPaths are 
 echo ""
 
 docker compose -f ../docker-compose.yml exec kafka kafka-console-consumer \
-  --bootstrap-server kafka:29092 \
+  --bootstrap-server kafka-1:29092 \
   --topic game.orders.validated \
   --from-beginning \
   --timeout-ms 10000 | while read -r line; do

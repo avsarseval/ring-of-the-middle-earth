@@ -169,3 +169,49 @@ func TestValidationAbilityOnCooldown(t *testing.T) {
 		t.Fatalf("expected ABILITY_ON_COOLDOWN, got %s message=%s", code, message)
 	}
 }
+// TestValidationMaiaDisabled tests K4 error code MAIA_DISABLED.
+// Saruman's CORRUPT_PATH ability must be rejected after Isengard falls.
+func TestValidationMaiaDisabled(t *testing.T) {
+	setupTestWorld(t)
+
+	// Isengard falls to Free Peoples
+	worldStateMu.Lock()
+	r := WorldState.Regions["isengard"]
+	r.ControlledBy = "FREE_PEOPLES"
+	WorldState.Regions["isengard"] = r
+	worldStateMu.Unlock()
+
+	order := OrderPayload{
+		OrderType: OrderMaiaAbility,
+		PlayerID:  "shadow",
+		UnitID:    "saruman",
+		Turn:      1,
+		PathID:    "fords-of-isen-to-isengard",
+	}
+
+	code, message := validateMaiaDisabledRule(order, "saruman", false)
+
+	if code != "MAIA_DISABLED" {
+		t.Fatalf("expected MAIA_DISABLED when Isengard falls, got code=%q message=%q", code, message)
+	}
+}
+
+// TestValidationDestroyConditionNotMet tests K4 error code DESTROY_CONDITION_NOT_MET.
+// DestroyRing must be rejected if Ring Bearer is not at mount-doom.
+func TestValidationDestroyConditionNotMet(t *testing.T) {
+	setupTestWorld(t)
+
+	// Ring Bearer starts at the-shire — not at mount-doom
+	order := OrderPayload{
+		OrderType: OrderDestroyRingConst,
+		PlayerID:  "light",
+		UnitID:    RingBearerID,
+		Turn:      1,
+	}
+
+	code, message := validateDestroyConditionRule(order, RingBearerID, false)
+
+	if code != "DESTROY_CONDITION_NOT_MET" {
+		t.Fatalf("expected DESTROY_CONDITION_NOT_MET when RB not at mount-doom, got code=%q message=%q", code, message)
+	}
+}

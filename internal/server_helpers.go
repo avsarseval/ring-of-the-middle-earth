@@ -22,12 +22,12 @@ type HealthResponse struct {
 }
 
 type AvailableOrder struct {
-	OrderType   string   `json:"orderType"`
-	Side       string   `json:"side"`
-	Required   []string `json:"required"`
-	Optional   []string `json:"optional,omitempty"`
-	Example    string   `json:"example"`
-	Notes      string   `json:"notes,omitempty"`
+	OrderType string   `json:"orderType"`
+	Side      string   `json:"side"`
+	Required  []string `json:"required"`
+	Optional  []string `json:"optional,omitempty"`
+	Example   string   `json:"example"`
+	Notes     string   `json:"notes,omitempty"`
 }
 
 type OrdersAvailableResponse struct {
@@ -80,52 +80,52 @@ func GetOrdersAvailable(playerID string, unitID string) OrdersAvailableResponse 
 	orders := []AvailableOrder{
 		{
 			OrderType: "ASSIGN_ROUTE",
-			Side:     "FREE_PEOPLES",
-			Required: []string{"orderType", "playerId", "unitId", "turn", "pathIds"},
-			Example:  `{"orderType":"ASSIGN_ROUTE","playerId":"light","unitId":"ring-bearer","turn":1,"pathIds":["shire-to-bree"]}`,
-			Notes:    "Assigns a route to a unit. Currently the first path is applied by the prototype engine.",
+			Side:      "FREE_PEOPLES",
+			Required:  []string{"orderType", "playerId", "unitId", "turn", "pathIds"},
+			Example:   `{"orderType":"ASSIGN_ROUTE","playerId":"light","unitId":"ring-bearer","turn":1,"pathIds":["shire-to-bree"]}`,
+			Notes:     "Assigns a route to a unit. Currently the first path is applied by the prototype engine.",
 		},
 		{
 			OrderType: "REDIRECT_UNIT",
-			Side:     "FREE_PEOPLES",
-			Required: []string{"orderType", "playerId", "unitId", "turn", "newPathIds"},
-			Example:  `{"orderType":"REDIRECT_UNIT","playerId":"light","unitId":"ring-bearer","turn":1,"newPathIds":["shire-to-tharbad"]}`,
-			Notes:    "Changes an assigned route.",
+			Side:      "FREE_PEOPLES",
+			Required:  []string{"orderType", "playerId", "unitId", "turn", "newPathIds"},
+			Example:   `{"orderType":"REDIRECT_UNIT","playerId":"light","unitId":"ring-bearer","turn":1,"newPathIds":["shire-to-tharbad"]}`,
+			Notes:     "Changes an assigned route.",
 		},
 		{
 			OrderType: "BLOCK_PATH",
-			Side:     "SHADOW",
-			Required: []string{"orderType", "playerId", "unitId", "turn", "pathId"},
-			Example:  `{"orderType":"BLOCK_PATH","playerId":"shadow","unitId":"witch-king","turn":1,"pathId":"rivendell-to-moria"}`,
-			Notes:    "Blocks or threatens a path depending on game logic.",
+			Side:      "SHADOW",
+			Required:  []string{"orderType", "playerId", "unitId", "turn", "pathId"},
+			Example:   `{"orderType":"BLOCK_PATH","playerId":"shadow","unitId":"witch-king","turn":1,"pathId":"rivendell-to-moria"}`,
+			Notes:     "Blocks or threatens a path depending on game logic.",
 		},
 		{
 			OrderType: "SEARCH_PATH",
-			Side:     "SHADOW",
-			Required: []string{"orderType", "playerId", "unitId", "turn", "pathId"},
-			Example:  `{"orderType":"SEARCH_PATH","playerId":"shadow","unitId":"witch-king","turn":1,"pathId":"shire-to-bree"}`,
-			Notes:    "Searches a path for Ring Bearer traces.",
+			Side:      "SHADOW",
+			Required:  []string{"orderType", "playerId", "unitId", "turn", "pathId"},
+			Example:   `{"orderType":"SEARCH_PATH","playerId":"shadow","unitId":"witch-king","turn":1,"pathId":"shire-to-bree"}`,
+			Notes:     "Searches a path for Ring Bearer traces.",
 		},
 		{
 			OrderType: "ATTACK_REGION",
-			Side:     "BOTH",
-			Required: []string{"orderType", "playerId", "unitId", "turn", "targetRegion"},
-			Example:  `{"orderType":"ATTACK_REGION","playerId":"light","unitId":"aragorn","turn":1,"targetRegion":"weathertop"}`,
-			Notes:    "Attacks an adjacent region if an enemy unit is present.",
+			Side:      "BOTH",
+			Required:  []string{"orderType", "playerId", "unitId", "turn", "targetRegion"},
+			Example:   `{"orderType":"ATTACK_REGION","playerId":"light","unitId":"aragorn","turn":1,"targetRegion":"weathertop"}`,
+			Notes:     "Attacks an adjacent region if an enemy unit is present.",
 		},
 		{
 			OrderType: "MAIA_ABILITY",
-			Side:     "BOTH",
-			Required: []string{"orderType", "playerId", "unitId", "turn", "pathId"},
-			Example:  `{"orderType":"MAIA_ABILITY","playerId":"light","unitId":"gandalf","turn":1,"pathId":"shire-to-bree"}`,
-			Notes:    "Gandalf/Saruman/Sauron effects are config-driven/prototype level.",
+			Side:      "BOTH",
+			Required:  []string{"orderType", "playerId", "unitId", "turn", "pathId"},
+			Example:   `{"orderType":"MAIA_ABILITY","playerId":"light","unitId":"gandalf","turn":1,"pathId":"shire-to-bree"}`,
+			Notes:     "Gandalf/Saruman/Sauron effects are config-driven/prototype level.",
 		},
 		{
 			OrderType: "FORTIFY_REGION",
-			Side:     "FREE_PEOPLES",
-			Required: []string{"orderType", "playerId", "unitId", "turn", "regionId"},
-			Example:  `{"orderType":"FORTIFY_REGION","playerId":"light","unitId":"gondor-army","turn":1,"regionId":"minas-tirith"}`,
-			Notes:    "Fortifies a region in the full turn processor.",
+			Side:      "FREE_PEOPLES",
+			Required:  []string{"orderType", "playerId", "unitId", "turn", "regionId"},
+			Example:   `{"orderType":"FORTIFY_REGION","playerId":"light","unitId":"gondor-army","turn":1,"regionId":"minas-tirith"}`,
+			Notes:     "Fortifies a region in the full turn processor.",
 		},
 	}
 

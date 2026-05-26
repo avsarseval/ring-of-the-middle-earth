@@ -22,7 +22,7 @@ type UnitConfig struct {
 	RespawnTurns     int      `json:"respawnTurns"`
 	Maia             bool     `json:"maia"`
 	MaiaAbilityPaths []string `json:"maiaAbilityPaths"`
-	AbilityEffect string `json:"abilityEffect"`
+	AbilityEffect    string   `json:"abilityEffect"`
 	IgnoresFortress  bool     `json:"ignoresFortress"`
 	CanFortify       bool     `json:"canFortify"`
 	Cooldown         int      `json:"cooldown"`
@@ -78,8 +78,8 @@ func LoadAllConfigs(mapPath string, unitsPath string) error {
 		return fmt.Errorf("birimler JSON'ı çözülemedi: %v", err)
 	}
 
-	fmt.Printf("📂 Konfigürasyonlar Yüklendi! (Bölge: %d, Yol: %d, Birim: %d)\n", 
+	fmt.Printf("📂 Konfigürasyonlar Yüklendi! (Bölge: %d, Yol: %d, Birim: %d)\n",
 		len(LoadedMap.Regions), len(LoadedMap.Paths), len(LoadedUnits))
-	
+
 	return nil
 }

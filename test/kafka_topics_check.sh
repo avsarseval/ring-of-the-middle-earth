@@ -26,7 +26,7 @@ for topic in "${TOPICS[@]}"; do
   echo "--------------------------------------"
 
   docker compose -f ../docker-compose.yml exec kafka kafka-topics \
-    --bootstrap-server kafka:29092 \
+    --bootstrap-server kafka-1:29092 \
     --describe \
     --topic "$topic"
 done

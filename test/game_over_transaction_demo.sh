@@ -24,5 +24,6 @@ docker compose -f ../docker-compose.yml exec kafka kafka-console-consumer \
 
 echo ""
 echo "✅ Expected:"
+echo "- Exactly one GameOver record should appear for this gameId"
 echo "- ABORTED_ENGINE_CRASH should NOT appear"
-echo "- ENGINE_CRASH_COMMITTED should appear once"
+echo "- cause should be ring_destroyed"
